@@ -1,16 +1,27 @@
-﻿#define _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <omp.h>
 #include <iostream>
 #include <fstream>
 #include <string>
 
+short OMP_NUM_THREADS = 1;
+
 using namespace std;
 
 float** create_matrix(int size) {
     float** matrix = new float* [size];
+
+    if (matrix == nullptr) {
+        printf("Memory cannot be allocated");
+        
+    }
     for (int i = 0; i < size; i++) {
         matrix[i] = new float[size];
+        if (matrix[i] == nullptr) {
+            printf("Memory cannot be allocated");
+           
+        }
     }
 
     return matrix;
@@ -24,78 +35,102 @@ void free_memory(float** matrix,int size) {
 }
 
 
-void getMatrixWithoutRowAndCol(float** matrix, int size, int row, int col, float** newMatrix) {
-    int offsetRow = 0;
-    int offsetCol = 0;
+void matrix_deductions(float** matrix, int size, int row, int col, float** reduced_matrix) {
+
+    int row_offset = 0;
+    int col_offset = 0;
+
+    #pragma omp parallel for schedule(static, OMP_NUM_THREADS)
     for (int i = 0; i < size - 1; i++) {
         if (i == row) {
-            offsetRow = 1;
+            row_offset = 1;
         }
-
-        offsetCol = 0;
+        
+        col_offset = 0;
         for (int j = 0; j < size - 1; j++) {
             if (j == col) {
-                offsetCol = 1;
+                col_offset = 1;
             }
 
-            newMatrix[i][j] = matrix[i + offsetRow][j + offsetCol];
+            reduced_matrix[i][j] = matrix[i + row_offset][j + col_offset];
         }
     }
 }
 
-float matrixDet(float** matrix, int size) {
-    float det = 0;
-    int degree = 1;
 
-    if (size == 1) {
-        return matrix[0][0];
-    }
+
+float determinant_(float** matrix, int size) {
+    float det = 0;
+    int sign = 1;
 
     if (size == 2) {
         return matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
     }
+    else if (size == 1) {
+        return matrix[0][0];
+    }
 
-   /* float** newMatrix = new float* [size - 1];
-    for (int i = 0; i < size - 1; i++) {
-        newMatrix[i] = new float[size - 1];
-    }*/
+    float** reduced_matrix = create_matrix(size - 1);
+    if (reduced_matrix == nullptr) {
+        return 1;
+    }
 
-    float** newMatrix = create_matrix(size - 1);
-
+    #pragma omp parallel for schedule(static, OMP_NUM_THREADS)
     for (int j = 0; j < size; j++) {
-        getMatrixWithoutRowAndCol(matrix, size, 0, j, newMatrix);
-
-        det = det + (degree * matrix[0][j] * matrixDet(newMatrix, size - 1));
-
-        degree = -degree;
+        matrix_deductions(matrix, size, 0, j, reduced_matrix);
+        
+        //#pragma omp atomic
+        //{
+            det = det + (sign * matrix[0][j] * determinant_(reduced_matrix, size - 1));
+            
+       // }
+        sign *= -1;
     }
 
-    /*for (int i = 0; i < size - 1; i++) {
-        delete[] newMatrix[i];
-    }
-    delete[] newMatrix;*/
-
-    free_memory(newMatrix, size - 1);
+    free_memory(reduced_matrix, size - 1);
 
     return det;
 }
-pair<float**, int> initialize(float** matrix, int size) {
-    return make_pair(matrix, size);
-}
 
-pair<float**, int> read_file(string file_name) {
+
+
+int main(int argc, char* argv[])
+{
+   if (argc < 4) {
+        printf("enter the arguments in the format: program.exe input_file.txt output_file.txt num_threads");
+        return 1;
+    }
+    string r_filename = argv[1];
+
+    string w_filename = argv[2];
+
+    OMP_NUM_THREADS = atoi(argv[3]);
+
+   
+
     ifstream fin;
+    string file_name = "test_in.txt";
+   
     int n = 0;
     int cols = 0;
     int rows = 0;
     float tmp = 0;
-   /* fin.open("test_in.txt");*/
-    fin.open(file_name);
+
+
+    fin.open(r_filename);
+    if (!(fin.is_open())) {
+        printf("cannot open file");
+        return 1;
+    }
+
     fin >> n;
     cols = n;
     rows = n;
 
     float** matrix = create_matrix(n);
+    if (matrix == nullptr) {
+        return 1;
+    }
 
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
@@ -104,81 +139,29 @@ pair<float**, int> read_file(string file_name) {
         }
     }
 
-    pair<float**, int> p = initialize(matrix,n);
 
     fin.close();
 
-    return p;
-}
 
-
-
-
-int main(int argc, char* argv[])
-{
-
+    omp_set_num_threads(OMP_NUM_THREADS);
     
-    //ifstream fin;
-    //fin.open("test_in.txt");
-    //
-    //int n;
-    //int cols;
-    //int rows;
-    //
-    //float tmp;
+    int size = n;
+    float tstart = omp_get_wtime();
+    float det = determinant_(matrix, size);
+    float tend = omp_get_wtime();
 
-    //fin >> n;
-    //
-    //cols = n;
-    //rows = n;
-   
-    //matrix = new float* [n];
-    //for (int i = 0; i < n; i++) {
-    //    matrix[i] = new float[n];
-    //}
-
-    //float** matrix = create_matrix(n);
-
-    //for (int i = 0; i < rows; i++) {
-    //    for (int j = 0; j < cols; j++) {
-    //        fin >> tmp;
-    //        matrix[i][j] = tmp;
-    //    }
-    //      
-
-    //}
-
-    //for (int i = 0; i < rows; i++) {
-    //    for (int j = 0; j < cols; j++) {
-
-    //        printf("%f\n", matrix[i][j]);
-    //    }
-    //}
-    string file_name = "test_in.txt";
-    pair<float**, int> pair = read_file(file_name);
-    float** matrix = pair.first;
-    int size = pair.second;
-    float det = matrixDet(matrix, size);
     free_memory(matrix, size);
-    
 
-//    float tstart = omp_get_wtime();
-//    int sum = 0;
-//#pragma omp parallel for
-//    for (int i = 0; i < n; ++i)
-//    {
-//#pragma omp atomic
-//        sum += i;
-//    }
-//    float tend = omp_get_wtime();
-
-
-    //printf("Time (sec): %f", tend - tstart);
-   
-   /* for (int i = 0; i < n; i++) {
-        delete[] matrix[i];
+    //printf("time (sec): %f/%u", tend - tstart);
+    printf("time(%i thread(s)) : %g ms\n", omp_get_num_threads(), tend - tstart);
+    ofstream fout;
+    fout.open(w_filename);
+    if (!(fout.is_open())) {
+        printf("cannot open file");
+        return 1;
     }
+    fout << det << endl;
 
-    delete[] matrix;*/
+    fout.close();
     return 0;
 }
