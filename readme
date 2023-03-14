@@ -1,0 +1,115 @@
+  METHOD select_bseg.
+
+    SELECT SINGLE zuonr kunnr FROM bseg
+      INTO ( cs_analit-zuonr , cs_analit-lifnr )
+      WHERE bukrs = ms_sscr-bukrs
+        AND belnr = cs_analit-belnr
+        AND gjahr = ms_sscr-gjahr
+        AND buzei = cs_analit-docln.
+
+    IF cs_analit-lifnr IS INITIAL.
+      SELECT SINGLE  lifnr FROM bseg
+         INTO  cs_analit-lifnr
+         WHERE bukrs = ms_sscr-bukrs
+           AND belnr = cs_analit-belnr
+           AND gjahr = ms_sscr-gjahr
+           AND buzei = cs_analit-docln.
+    ENDIF.
+
+
+    "{ Бирючков Н.Е. FI_0771_010_Налоговый регистр 3 уровня (Q00012866)
+    IF cs_analit-tcode = 'VL02N'.
+      DATA(lv_chetfactw) = cs_analit-awkey(10).
+    ENDIF.
+    IF cs_analit-belnr = '4900008638' OR cs_analit-belnr = '4900004048' OR cs_analit-belnr = '4900005617'.
+      DATA(lv_chetfactn) = cs_analit-awkey(10).
+    ENDIF.
+
+    IF cs_analit-awkey = '49022450342022' OR cs_analit-awkey = '49021968652022'.
+      DATA(lv_chetfactnew) = cs_analit-awkey(10).
+    ENDIF.
+
+    IF cs_analit-lifnr IS INITIAL OR cs_analit-zuonr IS INITIAL .
+      IF cs_analit-awkey IS NOT INITIAL.
+
+        DATA(lv_chetfact) = cs_analit-awkey(10).
+        DATA(lv_chetyear) = cs_analit-awkey+10(4).
+        SELECT SINGLE matnr INTO @DATA(lv_matnr) FROM mseg
+          WHERE mblnr = @lv_chetfact AND gjahr = @lv_chetyear.
+      ELSE.
+
+        SELECT SINGLE ebeln INTO @DATA(lv_ebeln) FROM mseg
+          WHERE matnr = @cs_analit-rmatnr
+          AND gjahr = @ms_sscr-gjahr
+          AND bwart = '101' AND lifnr <> ''.
+        IF sy-subrc EQ 0.
+          IF lv_ebeln IS NOT INITIAL.
+
+            SELECT SINGLE konnr INTO @DATA(lv_konnr) FROM ekpo
+                  WHERE ebeln = @lv_ebeln.
+            IF sy-subrc EQ 0.
+              IF lv_konnr IS NOT INITIAL.
+                SELECT SINGLE zznrdms,lifnr FROM ekko
+                INTO ( @DATA(lv_zuonr), @cs_analit-lifnr )
+                WHERE ebeln = @lv_konnr.
+                SHIFT lv_zuonr LEFT DELETING LEADING '0'.
+                cs_analit-zuonr = lv_zuonr.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+        CLEAR: lv_ebeln,
+              lv_konnr,
+              lv_zuonr,
+              lv_matnr.
+
+      ENDIF.
+
+*        IF sy-subrc EQ 0.
+      IF lv_matnr IS NOT INITIAL.
+        SELECT SINGLE ebeln INTO @lv_ebeln FROM mseg
+          WHERE matnr = @lv_matnr
+          AND gjahr = @lv_chetyear
+          AND bwart = '101' AND lifnr <> ''.
+        IF sy-subrc EQ 0 OR lv_ebeln IS NOT INITIAL.
+
+          SELECT SINGLE konnr INTO @lv_konnr FROM ekpo
+            WHERE ebeln = @lv_ebeln.
+          IF sy-subrc EQ 0.
+            IF lv_konnr IS NOT INITIAL.
+              SELECT SINGLE zznrdms,lifnr FROM ekko
+              INTO ( @lv_zuonr, @cs_analit-lifnr )
+              WHERE ebeln = @lv_konnr.
+              SHIFT lv_zuonr LEFT DELETING LEADING '0'.
+              cs_analit-zuonr = lv_zuonr.
+            ENDIF.
+          ENDIF.
+
+        ELSE.
+          CLEAR: lv_ebeln,
+                 lv_konnr,
+                 lv_zuonr,
+                 lv_matnr.
+          SELECT SINGLE ebeln INTO @lv_ebeln FROM mseg
+        WHERE matnr = @cs_analit-rmatnr
+        AND gjahr = @lv_chetyear
+        AND bwart = '101' AND lifnr <> ''.
+          IF sy-subrc EQ 0.
+            SELECT SINGLE konnr INTO @lv_konnr FROM ekpo
+           WHERE ebeln = @lv_ebeln.
+            IF sy-subrc EQ 0.
+              SELECT SINGLE zznrdms,lifnr FROM ekko
+               INTO ( @lv_zuonr, @cs_analit-lifnr )
+               WHERE ebeln = @lv_konnr.
+              SHIFT lv_zuonr LEFT DELETING LEADING '0'.
+              cs_analit-zuonr = lv_zuonr.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+*        ENDIF.
+
+    ENDIF.
+
+    "} Бирючков Н.Е. FI_0771_010_Налоговый регистр 3 уровня (Q00012866)
+  ENDMETHOD.
