@@ -14,10 +14,10 @@
 #endif
 
 using namespace std;
-
+#define MAX_SOURCE_SIZE 4096
 
 const string clSrc =
-"void matrix_mult(float* matrix, float* matrix1, float* matrix2, int n, int k, int m) {     \r\n"
+"__kernel /*void*/ matrix_mult ( __global float* matrix,__global float* matrix1,__global float* matrix2, int n, int k, int m ) {     \r\n"
 "  float tmp = 0.0;														                    \r\n"
 "  for (int i = 0; i < m; i++) {															\r\n"
 "    for (int j = 0; j < n; j++) {															\r\n"
@@ -26,9 +26,22 @@ const string clSrc =
 "           tmp = matrix1[i * k + f] * matrix2[f * n + j];									\r\n"
 "			matrix[i * n + j] += tmp;														\r\n"
 "		}																					\r\n"
-	"}																						\r\n"
-"	}																						\r\n"
+"    }																				     	\r\n"
+"  }																						\r\n"
 "}																							\r\n";
+
+char* fileToString(const char* filename) {
+	
+	long input_file_size;
+	FILE* input_file = fopen(filename, "rb");
+	fseek(input_file, 0, SEEK_END);
+	input_file_size = ftell(input_file);
+	rewind(input_file);
+	char*  ret = (char*)malloc(input_file_size * (sizeof(char)));
+	fread(ret, sizeof(char), input_file_size, input_file);
+	fclose(input_file);
+	return ret;
+}
 
 
 
@@ -103,47 +116,78 @@ void matrix_mult(float* matrix,float* matrix1, float* matrix2, int n, int k,int 
 	
 }
 
+cl_device_id create_device() {
+	cl_platform_id platform;
+	cl_device_id dev;
+	cl_int err = 0;
 
-int initAllDataGPU(int n,int k,int m )  {
+	err |= clGetPlatformIDs(1, &platform, NULL);
+	err |= clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &dev, NULL);
+	if (err == CL_DEVICE_NOT_FOUND) {
+		err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, &dev, NULL);
+	}
+	if (err) throw;
+	return dev;
+}
 
-	cl_uint numPlatforms;
+int align(int x, int y) {
+	return (x + y - 1) / y * y;
+}
+
+void initOpenCl(int n, int k, int m, float* matrix1, float* matrix2, float* matrix) {
+
+	//cl_device_id device = create_device();
 	
-	//get Platform
-	clGetPlatformIDs(0, NULL, &numPlatforms);
-	cl_platform_id* platform_ids = (cl_platform_id*)malloc(sizeof(cl_platform_id) * numPlatforms);
+	cl_platform_id platform_id;
+	cl_uint ret_num_platforms;
+	cl_int ret;
+	ret = clGetPlatformIDs(1, &platform_id, &ret_num_platforms);
+
 	cl_device_id device_id;
-	cl_context context;
-	
-	int err = clGetPlatformIDs(numPlatforms, platform_ids, NULL);
-
-	//get Device
-	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_GPU, 1, &device_id, NULL);
-	if (err != CL_SUCCESS)
+	cl_uint ret_num_devices;
+	ret = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, &ret_num_devices);
+	if (ret != CL_SUCCESS)
 	{
 		printf("Error: Failed to create a device group!\n");
-		return EXIT_FAILURE;
+		exit(1);
+		
 	}
-
-	//create context
-	context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
+	cl_context context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &ret);
 	if (!context)
 	{
 		printf("Error: Failed to create a compute context!\n");
-		return EXIT_FAILURE;
+		exit(1);
+		
 	}
 
 
-	cl_program program = clCreateProgramWithSource(context, 1, (const char**)&clSrc, NULL, &err);
-	if (!program)
-	{
-		printf("Error: Failed to create compute program!\n");
-		return EXIT_FAILURE;
+
+
+	cl_program program = NULL;
+	cl_kernel kernel = NULL;
+
+	FILE* fp;
+	const char fileName[] = "source.c";
+	size_t source_size;
+	char* source_str;
+	int i;
+
+	fp = fopen(fileName, "r");
+	if (!fp) {
+		fprintf(stderr, "Failed to load kernel.\n");
+		exit(1);
 	}
+	source_str = (char*)malloc(MAX_SOURCE_SIZE);
+	source_size = fread(source_str, 1, MAX_SOURCE_SIZE, fp);
+	fclose(fp);
 
+	/* создать бинарник из кода программы */
+	program = clCreateProgramWithSource(context, 1, (const char**)&source_str, (const size_t*)&source_size, &ret);
 
-	// Build the program executable
-	err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
-	if (err != CL_SUCCESS)
+	/* скомпилировать программу */
+	//ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
+	ret = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+	if (ret != CL_SUCCESS)
 	{
 		size_t len;
 		char buffer[2048];
@@ -151,45 +195,88 @@ int initAllDataGPU(int n,int k,int m )  {
 		printf("Error: Failed to build program executable!\n");
 		clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
 		printf("%s\n", buffer);
+
 		exit(1);
 	}
 
-	// Create the compute kernel in the program we wish to run
-	//
-	cl_kernel kernel = clCreateKernel(program, "allToOne", &err);
-	if (!kernel || err != CL_SUCCESS)
+
+	 kernel = clCreateKernel(program, "matrix_mult", &ret);
+	if (!kernel || ret != CL_SUCCESS)
 	{
 		printf("Error: Failed to create compute kernel!\n");
 		exit(1);
 	}
 
-	cl_mem matrix1 = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * m * k, NULL, NULL);
-	cl_mem matrix2 = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * k * n, NULL, NULL);
-	cl_mem matrix =  clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * m * n, NULL, NULL);
-	if (!matrix1 || !matrix2 || !matrix)
+	cl_command_queue commands = clCreateCommandQueueWithProperties(context, device_id, 0, &ret);
+	if (!commands)
+	{
+		printf("Error: Failed to create a command commands!\n");
+		exit(1);
+
+	}
+
+	cl_mem matrix_buf1 = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(float) * m * k, NULL, &ret);
+	cl_mem matrix_buf2 = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(float) * k * n, NULL, &ret);
+	cl_mem matrix_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * m * n, NULL, &ret);
+	if (!matrix_buf1 || !matrix_buf2 || !matrix_buf)
 	{
 		printf("Error: Failed to allocate device memory!\n");
 		exit(1);
 	}
-	
-	err = 0;
-	err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &matrix1);
-	err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &matrix2);
-	err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &matrix);
-	if (err != CL_SUCCESS)
+
+
+
+	ret = clEnqueueWriteBuffer(commands, matrix_buf1, CL_TRUE, 0, sizeof(float) * m * k, matrix1, 0, NULL, NULL);
+	if (ret != CL_SUCCESS)
 	{
-		printf("Error: Failed to set kernel arguments! %d\n", err);
+		printf("Error: Failed to write to source array!\n");
+		exit(1);
+	}
+	ret = clEnqueueWriteBuffer(commands, matrix_buf2, CL_TRUE, 0, sizeof(float) * k * n, matrix2, 0, NULL, NULL);
+	if (ret != CL_SUCCESS)
+	{
+		printf("Error: Failed to write to source array!\n");
+		exit(1);
+	}
+	ret = clEnqueueWriteBuffer(commands, matrix_buf, CL_TRUE, 0, sizeof(float) * m * n, matrix, 0, NULL, NULL);
+	if (ret != CL_SUCCESS)
+	{
+		printf("Error: Failed to write to source array!\n");
 		exit(1);
 	}
 
 
+	ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&matrix_buf1);
+	ret |= clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&matrix_buf2);
+	ret |= clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&matrix_buf);
+	if (ret != CL_SUCCESS)
+	{
+		printf("Error: Failed to set kernel arguments! %d\n", ret);
+		exit(1);
+	}
+	size_t work_size[1] = { m };
 
-	//////--- пишем сгенерированные матрицы в буферы девайса
-	//CLBufferWrite(clMemIn1, first);
-	//CLBufferWrite(clMemIn2, second);
-	//CLBufferWrite(clMemOut, thirdGPU);   // 0.0 везде
+	size_t local_size[2] = { 256,1 };
+	size_t global_size[2] = { align(m,local_size[0]),align(n,local_size[1]) };
+	//ret = clEnqueueNDRangeKernel(commands, kernel, 1, NULL, work_size, NULL, 0, NULL, NULL);
+	ret = clEnqueueNDRangeKernel(commands, kernel, 2, NULL, global_size, local_size, 0, NULL, NULL);
 
-	return;
+	ret = clEnqueueReadBuffer(commands, matrix_buf, CL_TRUE, 0, sizeof(cl_float) * m * n, matrix, 0, NULL, NULL);
+
+	clFinish(commands);
+	for (int i = 0; i < m * n; i++) {
+		printf("%f", matrix[i]);
+	}
+	
+	clReleaseMemObject(matrix_buf);
+	clReleaseMemObject(matrix_buf1);
+	clReleaseMemObject(matrix_buf2);
+	clReleaseProgram(program);
+	clReleaseKernel(kernel);
+	clReleaseCommandQueue(commands);
+	clReleaseContext(context);
+
+
 }
 
 
@@ -214,7 +301,7 @@ int main(int argc, char* argv[])
 	int device_num = 0;
 	string r_filename  = "in.txt";
 	string w_filename = "out.txt";
-	int method = 0;
+	int method = 1;
 
 	if (device_num < 0 || device_num > 2) {
 		device_num == 0;
@@ -264,6 +351,18 @@ int main(int argc, char* argv[])
 
 	}
 
+	float* result = new(nothrow) float[m * n];
+	if (result == nullptr) {
+		fprintf(stderr, "Memory cannot be allocated");
+
+		return 1;
+
+	}
+
+	for (int i = 0; i < m * n; i++) {
+		matrix[i] = 0;
+	}
+
 	//Читаем первую матрицу
 	for (int i = 0; i < m; i++) {
 		for (int j = 0; j < k; j++) {
@@ -310,25 +409,7 @@ int main(int argc, char* argv[])
 	}
 	else if (method == 1) {
 
-		//--- начинаем работать с OCL
-		int clCtx;             // хэндл контекста
-		int clPrg;             // хэндл программы на девайсе
-		int clKrn;             // хэндл кернела
-		int clMemIn1;          // хэндл первого буфера (входного)
-		int clMemIn2;          // хэндл второго буфера (входного)
-		int clMemOut;          // хэндл третьего буфера (выходного)
-
-
-		//initAllDataGPU(clCtx, clPrg, clKrn, clMemIn1, clMemIn2, clMemOut);
-
-		//executeGPU(clKrn);
-
-		////--- создаем буфер для чтения и считываем результат; он нам пригодится позднее
-		//float buf[];
-		//readOutBuf(clMemOut, buf);
-
-
-
+		initOpenCl(n,k,m,matrix1,matrix2,matrix);
 
 	}
 	else if (method == 2) {
@@ -363,7 +444,7 @@ int main(int argc, char* argv[])
 		}
 		fout << endl;
 	}
-
+	delete[] result;
 	delete[] matrix;
 	delete[] matrix1;
 	delete[] matrix2;
