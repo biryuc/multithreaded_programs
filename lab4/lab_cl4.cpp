@@ -22,6 +22,7 @@ using namespace std;
 
 #define _CRT_SECURE_NO_WARNINGS
 #define MAX_SOURCE_SIZE 4096
+#define TILE_SIZE 8
 
 using namespace std;
 
@@ -39,8 +40,8 @@ struct comp
     }
 };
 
-std::string get_program_text() {
-    std::ifstream t("source.cl");
+std::string get_program_text(string filename) {
+    std::ifstream t(filename);
     return std::string((std::istreambuf_iterator<char>(t)),
         std::istreambuf_iterator<char>());
 }
@@ -267,7 +268,7 @@ float* matrix_mult_opencl(float* matrix1,float* matrix2,int n,int k,int m,int de
     }
 
 
-    std::string src = get_program_text();
+    std::string src = get_program_text("source.cl");
     const char* src_text = src.data();
     const size_t src_length = src.size();
 
@@ -440,6 +441,308 @@ float* matrix_mult_opencl(float* matrix1,float* matrix2,int n,int k,int m,int de
     return matrix_opencl;
 }
 
+
+
+float* matrix_mult_opencl_tile(float* matrix1, float* matrix2, int n, int k, int m, int device_num) {
+
+    cl_platform_id platform_id;
+    cl_uint error_num_platforms;
+    cl_int error;
+    cl_device_id device_id;
+    cl_uint error_num_devices;
+    cl_program program = NULL;
+    cl_kernel kernel = NULL;
+    map<int, int> types;
+    int* counter = new int[1];
+    counter[0] = 0;
+    int SIZE = 20;
+    int cnt = 0;
+    auto start_time = chrono::steady_clock::now();
+
+    string* device_names = new string[SIZE];
+
+    if (device_names == nullptr) {
+        fprintf(stderr, "Memory cannot be allocated");
+
+        exit(1);
+
+    }
+    int* device_types = new int[SIZE];
+    if (device_types == nullptr) {
+        fprintf(stderr, "Memory cannot be allocated");
+        delete[] device_names;
+        exit(1);
+
+    }
+    cl_device_id* full_device_ids = (cl_device_id*)malloc(sizeof(cl_device_id) * SIZE);
+    types = get_platforms(full_device_ids, device_names, types, counter);
+    cnt = counter[0];
+    //for (int i = 0; i < 2; i++) {
+    // printf("%s\n", device_names[i].c_str());
+    // printf("%x\n", full_device_ids[i]);
+    //}
+
+    set<std::pair<int, int>, comp> set_types(types.begin(), types.end());
+
+    if (cnt < device_num && cnt != 0) {
+
+        for (auto const& pair : set_types) {
+            device_num = pair.first;
+            break;
+        }
+
+    }
+    else if (counter == 0) {
+        delete[] device_names;
+        delete[] device_types;
+        free(full_device_ids);
+        printf("Number of devices: 0\n");
+        exit(1);
+    }
+    else {
+        int l = device_num;
+        for (auto const& pair : set_types) {
+            device_num = pair.first;
+            l--;
+            if (l == 0 || l < 0) {
+                break;
+            }
+
+        }
+
+
+    }
+
+
+
+    printf("Device: %s\n", device_names[device_num].c_str());
+
+    cl_float* matrix_opencl = new(nothrow) cl_float[m * n];
+    if (matrix_opencl == nullptr) {
+        fprintf(stderr, "Memory cannot be allocated");
+        delete[] device_names;
+        delete[] device_types;
+        free(full_device_ids);
+        exit(1);
+
+    }
+
+
+    //error = clGetPlatformIDs(1, &platform_id, &error_num_platforms);
+    //if (error != CL_SUCCESS)
+    //{
+    //    fprintf(stderr, "Error: Failed to create a platform group!\n");
+    //    exit(1);
+
+    //}
+
+    //error = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, &error_num_devices);
+    //if (error != CL_SUCCESS)
+    //{
+    //    fprintf(stderr, "Error: Failed to create a device group!\n");
+    //    exit(1);
+
+    //}
+    cl_context context = clCreateContext(NULL, 1, &full_device_ids[device_num], NULL, NULL, &error);
+    if (!context)
+    {
+        fprintf(stderr, "Error: Failed to create a compute context!\n");
+        delete[] device_names;
+        delete[] matrix_opencl;
+        delete[] device_types;
+        free(full_device_ids);
+        exit(1);
+
+    }
+    cl_command_queue commands = clCreateCommandQueueWithProperties(context, full_device_ids[device_num], 0, &error);
+
+    if (error != CL_SUCCESS)
+    {
+        fprintf(stderr, "Error: Failed to create commands!\n");
+        delete[] matrix_opencl;
+        clReleaseContext(context);
+        delete[] device_names;
+        delete[] device_types;
+        free(full_device_ids);
+        exit(1);
+    }
+
+
+    std::string src = get_program_text("local_memory.cl");
+    const char* src_text = src.data();
+    const size_t src_length = src.size();
+
+
+    program = clCreateProgramWithSource(context, 1, &src_text, &src_length, &error);
+
+    std::string build_option = "-DTILE_SIZE=" + std::to_string(TILE_SIZE);
+    error = clBuildProgram(program, 1, &full_device_ids[device_num], build_option.c_str(), NULL, NULL);
+
+
+    if (error != CL_SUCCESS)
+    {
+        size_t len;
+        char buffer[2048];
+
+        fprintf(stderr, "Error: Failed to build program executable!\n");
+        clGetProgramBuildInfo(program, full_device_ids[device_num], CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
+        fprintf(stderr, "%s\n", buffer);
+
+        clReleaseProgram(program);
+        clReleaseCommandQueue(commands);
+        clReleaseContext(context);
+        delete[] matrix_opencl;
+        delete[] device_names;
+        delete[] device_types;
+        free(full_device_ids);
+        exit(1);
+    }
+
+    cl_mem matrix_buf1 = NULL;
+    cl_mem matrix_buf2 = NULL;
+    cl_mem matrix_buf = NULL;
+    cl_mem size_buf = NULL;
+    cl_int sizes[3] = { m, k, n };
+
+
+    matrix_buf1 = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_float) * m * k, NULL, &error);
+    matrix_buf2 = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_float) * k * n, NULL, &error);
+    size_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, 3 * sizeof(cl_int), NULL, &error);
+    matrix_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_float) * n * m, NULL, &error);
+    if (!matrix_buf1 || !matrix_buf2 || !matrix_buf || !size_buf)
+    {
+        fprintf(stderr, "Error: Failed to allocate device memory!\n");
+
+
+        clReleaseProgram(program);
+        clReleaseCommandQueue(commands);
+        clReleaseContext(context);
+        delete[] device_types;
+        delete[] device_names;
+        delete[] matrix_opencl;
+        free(full_device_ids);
+        exit(1);
+    }
+
+
+
+    kernel = clCreateKernel(program, "matrix_mult_tile", &error);
+    if (!kernel || error != CL_SUCCESS)
+    {
+        fprintf(stderr, "Error: Failed to create compute kernel!\n");
+        clReleaseMemObject(matrix_buf);
+        clReleaseMemObject(matrix_buf1);
+        clReleaseMemObject(matrix_buf2);
+        clReleaseMemObject(size_buf);
+        clReleaseProgram(program);
+        clReleaseCommandQueue(commands);
+        clReleaseContext(context);
+        delete[] device_names;
+        delete[] device_types;
+        delete[] matrix_opencl;
+        free(full_device_ids);
+        exit(1);
+    }
+
+    error = clEnqueueWriteBuffer(commands, matrix_buf1, CL_TRUE, 0, sizeof(cl_float) * m * k, matrix1, 0, NULL, NULL);
+    error |= clEnqueueWriteBuffer(commands, matrix_buf2, CL_TRUE, 0, sizeof(cl_float) * n * k, matrix2, 0, NULL, NULL);
+    error |= clEnqueueWriteBuffer(commands, size_buf, CL_TRUE, 0, 3 * sizeof(cl_int), sizes, 0, NULL, NULL);
+    if (error != CL_SUCCESS)
+    {
+        fprintf(stderr, "Error: Failed to write to source array!\n");
+        clReleaseMemObject(matrix_buf);
+        clReleaseMemObject(matrix_buf1);
+        clReleaseMemObject(matrix_buf2);
+        clReleaseMemObject(size_buf);
+        clReleaseProgram(program);
+        clReleaseKernel(kernel);
+        clReleaseCommandQueue(commands);
+        clReleaseContext(context);
+        delete[] device_names;
+        delete[] matrix_opencl;
+        delete[] device_types;
+        free(full_device_ids);
+        exit(1);
+    }
+    error = clSetKernelArg(kernel, 0, sizeof(cl_mem), &matrix_buf1);
+    error |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &matrix_buf2);
+    error |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &matrix_buf);
+    error |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &size_buf);
+    if (error != CL_SUCCESS)
+    {
+        fprintf(stderr, "Error: Failed to set kernel arguments! %d\n", error);
+        clReleaseMemObject(matrix_buf);
+        clReleaseMemObject(matrix_buf1);
+        clReleaseMemObject(matrix_buf2);
+        clReleaseMemObject(size_buf);
+        clReleaseProgram(program);
+        clReleaseKernel(kernel);
+        clReleaseCommandQueue(commands);
+        clReleaseContext(context);
+        delete[] device_names;
+        delete[] matrix_opencl;
+        delete[] device_types;
+        free(full_device_ids);
+        exit(1);
+    }
+    const size_t global_work_size[3] = { n,m,1 };
+    const size_t local_work_size[3] = {TILE_SIZE,TILE_SIZE, 1 };
+
+
+    auto start_host = chrono::steady_clock::now();
+
+    error = clEnqueueNDRangeKernel(commands, kernel, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+
+
+    auto end_host = chrono::steady_clock::now();
+
+    error |= clEnqueueReadBuffer(commands, matrix_buf, CL_TRUE, 0, sizeof(cl_float) * n * m, matrix_opencl, 0, NULL, NULL);
+    if (error != CL_SUCCESS)
+    {
+        fprintf(stderr, "Error: Failed to read buffer! %d\n", error);
+        clReleaseMemObject(matrix_buf);
+        clReleaseMemObject(matrix_buf1);
+        clReleaseMemObject(matrix_buf2);
+        clReleaseMemObject(size_buf);
+        clReleaseProgram(program);
+        clReleaseKernel(kernel);
+        clReleaseCommandQueue(commands);
+        clReleaseContext(context);
+        delete[] device_names;
+        delete[] matrix_opencl;
+        delete[] device_types;
+        free(full_device_ids);
+        exit(1);
+    }
+
+    auto end_time = chrono::steady_clock::now();
+
+
+    auto time_ms = chrono::duration_cast<chrono::milliseconds>(end_time - start_time);
+    auto time_ms2 = chrono::duration_cast<chrono::milliseconds>(end_host - start_host);
+    cout << "Time:  " << time_ms.count() <<"ms" << "\t" << time_ms2.count() << "ms" << "\n";
+    for (int j = 0; j < n*m; j++) {
+        printf("%f", matrix_opencl[j]);
+        printf("\n");
+    }
+    clFinish(commands);
+
+    clReleaseMemObject(matrix_buf);
+    clReleaseMemObject(matrix_buf1);
+    clReleaseMemObject(matrix_buf2);
+    clReleaseMemObject(size_buf);
+    clReleaseProgram(program);
+    clReleaseKernel(kernel);
+    clReleaseCommandQueue(commands);
+    clReleaseContext(context);
+    delete[] device_names;
+
+    delete[] device_types;
+    free(full_device_ids);
+
+    return matrix_opencl;
+}
+
 void matrix_mult(float* matrix, float* matrix1, float* matrix2, int n, int k, int m) {
 
     float tmp = 0.0;
@@ -598,7 +901,7 @@ int main(int argc, char* argv[]) {
 
 
        
-        matrix = matrix_mult_opencl(matrix1, matrix2, n, k, m, device_num);
+        matrix = matrix_mult_opencl_tile(matrix1, matrix2, n, k, m, device_num);
        
         
     }
