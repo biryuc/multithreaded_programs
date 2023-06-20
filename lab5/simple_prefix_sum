@@ -1,0 +1,23 @@
+
+
+float* simple_prefix_sum(float* arr, int size) {
+
+    float* prefix_sum = new(nothrow) float[size+1];
+    if (prefix_sum == nullptr) {
+        fprintf(stderr, "Memory cannot be allocated");
+       
+        exit(1);
+
+    }
+
+    prefix_sum[0] = 0;
+
+    for (int i = 1; i < size + 1; i++) {
+        prefix_sum[i] = prefix_sum[i-1] + arr[i-1];
+    }
+
+    return prefix_sum;
+}
+
+
+
