@@ -1,1 +1,1 @@
-# Test status in Github.Actions: [![statusbadge](../../actions/workflows/buildtest.yaml/badge.svg?branch=main&event=pull_request)](../../actions/workflows/buildtest.yaml)
+https://docs.google.com/document/d/1V3dc4wyEBnDVIwsp_qMn3yY5jFYT9531uNX6RxVNhRU/edit
