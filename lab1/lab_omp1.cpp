@@ -4,91 +4,116 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <chrono>
 
-short OMP_NUM_THREADS = 1;
 
 using namespace std;
 
-float** create_matrix(int size) {
-    float** matrix = new float* [size];
+float gaus_det(int size, float* matrix) {
+    float det = 1;
+    float tmp;
+    int i_new;
+    float eps = 1.19e-07;
 
-    if (matrix == nullptr) {
-        printf("Memory cannot be allocated");
-        
-    }
-    for (int i = 0; i < size; i++) {
-        matrix[i] = new float[size];
-        if (matrix[i] == nullptr) {
-            printf("Memory cannot be allocated");
-           
-        }
-    }
+    for (int i = 0; i < size; ++i) {
 
-    return matrix;
-}
+        i_new = i;
+        //находим самый большой элемент
 
-void free_memory(float** matrix,int size) {
-    for (int i = 0; i < size; i++) {
-        delete[] matrix[i];
-    }
-    delete[] matrix;
-}
-
-
-void matrix_deductions(float** matrix, int size, int row, int col, float** reduced_matrix) {
-
-    int row_offset = 0;
-    int col_offset = 0;
-
-    #pragma omp parallel for schedule(static, OMP_NUM_THREADS)
-    for (int i = 0; i < size - 1; i++) {
-        if (i == row) {
-            row_offset = 1;
-        }
-        
-        col_offset = 0;
-        for (int j = 0; j < size - 1; j++) {
-            if (j == col) {
-                col_offset = 1;
+        for (int j = i + 1; j < size; ++j) {
+            if ((abs(matrix[j * size + i]) - abs(matrix[i_new * size + i])) > eps) {
+                i_new = j;
             }
-
-            reduced_matrix[i][j] = matrix[i + row_offset][j + col_offset];
         }
+
+        //поднимаем эту строку 
+        for (int k = 0; k < size; ++k) {
+            tmp = matrix[i * size + k];
+            matrix[i * size + k] = matrix[i_new * size + k];
+            matrix[i_new * size + k] = tmp;
+        }
+        //при замене двух строк определитель меняет знак
+        if (i != i_new) {
+            det *= -1;
+        }
+
+        //опеределитель равен произведению диагональных элементов в верхне треугольной форме
+        det *= matrix[i * size + i];
+
+        ////делим на ведущий элемент строки
+
+        for (int k = i + 1; k < size; ++k) {
+            matrix[i * size + k] /= matrix[i * size + i];
+        }
+
+        // вычитаем из строк первую строку умноженную на ведущий элемент
+
+        for (int k = i + 1; k < size; ++k) {
+            for (int f = i + 1; f < size; ++f) {
+                matrix[(k)*size + f] -= (matrix[i * size + f] * matrix[k * size + i]); // / matrix[i * size + i];
+            }
+        }
+
     }
+    return det;
 }
 
+float gaus_det_omp(int size, float* matrix) {
+    float det = 1;
+    float tmp;
+    int i_new;
+    int chunk = 1;
+    float eps = 1.19e-07;
 
-
-float determinant_(float** matrix, int size) {
-    float det = 0;
-    int sign = 1;
-
-    if (size == 2) {
-        return matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
-    }
-    else if (size == 1) {
-        return matrix[0][0];
-    }
-
-    float** reduced_matrix = create_matrix(size - 1);
-    if (reduced_matrix == nullptr) {
-        return 1;
-    }
-
-    #pragma omp parallel for schedule(static, OMP_NUM_THREADS)
-    for (int j = 0; j < size; j++) {
-        matrix_deductions(matrix, size, 0, j, reduced_matrix);
+    for (int i = 0; i < size; ++i) {
         
-        //#pragma omp atomic
-        //{
-            det = det + (sign * matrix[0][j] * determinant_(reduced_matrix, size - 1));
+        i_new = i;
+        //находим самый большой элемент
+        #pragma omp parallel for  schedule(guided,chunk )
+        for (int j = i + 1; j < size; ++j) {
+            #pragma omp critical
+            {
+                if ((abs(matrix[j * size + i]) - abs(matrix[i_new*size + i]) ) > eps ) {
+               
+                        i_new = j;
+               
+                
+                }
+
+            }
+        }
+
+        //поднимаем эту строку 
+        for (int k = 0; k < size; ++k) {
+            tmp = matrix[i * size + k];
+            matrix[i * size + k] = matrix[i_new * size + k];
+            matrix[i_new * size + k] = tmp;
+        }
+        //при замене двух строк определитель меняет знак
+        if (i != i_new) {
+            det *= -1;
+        }
+
+        //опеределитель равен произведению диагональных элементов в верхне треугольной форме
+        det *= matrix[i*size + i];
+
+        //делим на ведущий элемент строки
+        #pragma omp parallel for  schedule(guided, chunk)
+        for (int k = i + 1; k < size; ++k) {
+            matrix[i * size + k] /= matrix[i * size + i];
+        }
+
+        // вычитаем из строк первую строку умноженную на ведущий элемент
+        #pragma omp parallel for  schedule(guided, chunk)
+        for (int k = i+1; k < size; ++k) {  
             
-       // }
-        sign *= -1;
+                for (int f = i + 1; f < size; ++f) {
+                    matrix[(k)*size + f] -= (matrix[i * size + f] * matrix[k * size + i]);  // /matrix[i * size + i];
+                    
+                }  
+        }
+
     }
-
-    free_memory(reduced_matrix, size - 1);
-
     return det;
 }
 
@@ -97,45 +122,69 @@ float determinant_(float** matrix, int size) {
 int main(int argc, char* argv[])
 {
    if (argc < 4) {
-        printf("enter the arguments in the format: program.exe input_file.txt output_file.txt num_threads");
+       // printf("Enter the arguments in the format: program.exe input_file.txt output_file.txt num_threads");
+        fprintf(stderr, "Enter the arguments in the format: program.exe input_file.txt output_file.txt num_threads");
         return 1;
     }
     string r_filename = argv[1];
 
     string w_filename = argv[2];
 
-    OMP_NUM_THREADS = atoi(argv[3]);
+    int num = atoi(argv[3]);
 
-   
+    //float arr[16] = { 1.0f, 2.0f, 8.8f, 9.9f,3.0f, 4.0f, 3.3f, 4.4f,2.0f, 5.2f, 2.2f, 5.5f, 6.3f, 7.8f, 6.3f, 7.8f };
 
     ifstream fin;
-    string file_name = "test_in.txt";
+    //string file_name = "test_in.txt";
    
     int n = 0;
     int cols = 0;
     int rows = 0;
     float tmp = 0;
+    int counter = 0;
+    float det;
 
 
     fin.open(r_filename);
+    //fin.open(file_name);
     if (!(fin.is_open())) {
-        printf("cannot open file");
+        fprintf(stderr, "Cannot open file");
+      //  printf("Cannot open file");
         return 1;
     }
 
     fin >> n;
+    if (fin.fail()) {
+        fprintf(stderr, "Wrong file format");
+       // printf("Wrong file format");
+        return 1;
+    }
     cols = n;
     rows = n;
 
-    float** matrix = create_matrix(n);
+    float* matrix = new float[n*n];
+
     if (matrix == nullptr) {
+        fprintf(stderr, "Memory cannot be allocated");
+       // printf("Memory cannot be allocated");
         return 1;
+
     }
 
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             fin >> tmp;
-            matrix[i][j] = tmp;
+            counter++;
+            if (fin.fail()||(fin.eof() && (counter < (n*n)))) {
+                delete[] matrix;
+                fprintf(stderr, "Wrong file format");
+               // printf("Wrong file format");
+                return 1;
+            }
+            else {
+                matrix[i * n + j] = tmp;
+            }
+            
         }
     }
 
@@ -143,21 +192,57 @@ int main(int argc, char* argv[])
     fin.close();
 
 
-    omp_set_num_threads(OMP_NUM_THREADS);
+
     
+  
+   
+
     int size = n;
     float tstart = omp_get_wtime();
-    float det = determinant_(matrix, size);
-    float tend = omp_get_wtime();
+    if (num == -1) {
+         auto start_time = chrono::steady_clock::now();
+         det = gaus_det(size, matrix);
+         auto end_time = chrono::steady_clock::now();
+         auto time_ms = chrono::duration_cast<chrono::milliseconds>(end_time - start_time);
+         cout << "time(1 thread(s)) : " << time_ms.count() << " ms\n";
 
-    free_memory(matrix, size);
+    }
+    else if (num == 0 || num > omp_get_max_threads()) {
+        omp_set_num_threads(omp_get_max_threads());
+        auto start_time = chrono::steady_clock::now();
+        det = gaus_det_omp(size, matrix);
+        auto end_time = chrono::steady_clock::now();
+        auto time_ms = chrono::duration_cast<chrono::milliseconds>(end_time - start_time);
+        cout << "time(omp) : " << time_ms.count() << " ms\n";
+    }
+    else if (num < -1 ) {
+        fprintf(stderr, "The number of threads should be more then -1");
+        //printf("The number of threads should be more then -1");
+        delete[] matrix;
+        return 1;
+    }
+    else {
+        omp_set_num_threads(num);
+        auto start_time = chrono::steady_clock::now();
+        det = gaus_det_omp(size, matrix);
+        auto end_time = chrono::steady_clock::now();
+        auto time_ms = chrono::duration_cast<chrono::milliseconds>(end_time - start_time);
+        cout << "time(omp) : " << time_ms.count() << " ms\n";
+    }
+    /*float tend = omp_get_wtime();
+    int threads = omp_get_num_threads();*/
+   
+
+    delete[] matrix;
 
     //printf("time (sec): %f/%u", tend - tstart);
-    printf("time(%i thread(s)) : %g ms\n", omp_get_num_threads(), tend - tstart);
+   // printf("time(%i thread(s)) : %g ms\n", num, tend - tstart);
     ofstream fout;
     fout.open(w_filename);
+    //fout.open("out.txt");
     if (!(fout.is_open())) {
-        printf("cannot open file");
+        fprintf(stderr, "Cannot open file");
+       // printf("Cannot open file");
         return 1;
     }
     fout << det << endl;
